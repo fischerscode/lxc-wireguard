@@ -71,22 +71,32 @@ without authenticated peer traffic: `ip link` alone does not prove a handshake.
 
 ## 2. Optional routed forwarding
 
-Only do this when the container should route traffic beyond itself. Create
+The image's `10-wireguard-defaults.conf` explicitly disables IPv4/IPv6 forwarding.
+Only opt in when the container should route traffic beyond itself. Create
 `/etc/sysctl.d/90-wireguard-routing.conf`:
 
 ```ini
 net.ipv4.ip_forward = 1
+net.ipv4.conf.default.forwarding = 1
 net.ipv6.conf.all.forwarding = 1
+net.ipv6.conf.default.forwarding = 1
 ```
 
+The default-interface settings also cover interfaces created later, including wg0.
 Load just this file without reapplying unrelated operator settings:
 
 ```sh
 sysctl -p /etc/sysctl.d/90-wireguard-routing.conf
 ```
 
-The enabled OpenRC sysctl service applies it on subsequent boots. If IPv6 uplink
-routing relies on router advertisements, forwarding normally disables RA acceptance. In that case
+The enabled OpenRC sysctl service applies the `10-` baseline before this `90-`
+operator override on subsequent boots. It runs before bootmisc and networking.
+Alpine then reads `/etc/sysctl.conf`, followed by `/run/sysctl.d/*.conf`; those
+can override both files. Review them and interface `forward-ipv4`/`forward-ipv6`
+options or pre/post-up hooks when troubleshooting. There is no post-network
+reset, timer or reconciler. A deliberately configured VPN service may also set
+the values at start, after the boot baseline. If IPv6 uplink routing relies on
+router advertisements, forwarding normally disables RA acceptance. In that case
 also set `net.ipv6.conf.eth0.accept_ra = 2` (adapt the interface), then confirm
 `ip -6 route`. Static IPv6 routes do not require this setting. Ensure IPv6 is
 enabled in the PVE network configuration and permitted by the host.

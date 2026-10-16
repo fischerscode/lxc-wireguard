@@ -8,15 +8,20 @@ management agent, configuration protocol, reconciler, Python or Dart runtime.
 
 The image ships no VPN configuration, peers, private keys, passwords, authorized
 SSH keys or machine identity. No WireGuard instance, nftables rules or forwarding
-is enabled. Optional examples exist only in this repository's documentation.
+is enabled. Since v0.1.1, `/etc/sysctl.d/10-wireguard-defaults.conf` explicitly
+sets IPv4/IPv6 forwarding to zero, including the defaults for new interfaces.
+Operators can opt into routing with a later sysctl file; nothing periodically
+resets these values. Optional examples exist only in this repository's documentation.
 
 ## Compatibility and host requirements
 
 Supported deployment target: **fully updated Proxmox VE 9.x on amd64**, with an
 **unprivileged** container and standard Alpine OS setup. This is the intended
-support scope, not a live certification: PVE creation, boot, SSH and reboot have
-not been tested for this revision. Other PVE versions, architectures and generic
-LXC installations are outside the supported target.
+support scope, not a live certification. An operator reported a successful
+v0.1.0 Proxmox boot with OpenRC, sshd and sysctl running, but IPv4 forwarding was
+unexpectedly 1 before VPN configuration. Its cause is unconfirmed. The v0.1.1
+fix still needs fresh-container and reboot acceptance tests on Proxmox. Other
+PVE versions, architectures and generic LXC installations are outside the supported target.
 
 The container shares the **host** kernel. On the Proxmox host, verify/load kernel
 WireGuard (`modprobe wireguard`) and the required nftables/netfilter features.
@@ -104,8 +109,8 @@ builder (the image itself remains Alpine):
 sudo apt-get update
 sudo apt-get install --no-install-recommends curl ca-certificates gnupg \
   zstd python3 git shellcheck
-bash -n scripts/build.sh scripts/customize.sh
-shellcheck -x scripts/build.sh scripts/customize.sh
+bash -n scripts/build.sh scripts/customize.sh tests/check-forwarding.sh
+shellcheck -x scripts/build.sh scripts/customize.sh tests/check-forwarding.sh
 python3 -m unittest discover -s tests -v
 sudo scripts/build.sh dev
 ```
@@ -182,3 +187,7 @@ Do not run build cleanup scripts against installed containers.
 
 [Validation status and outstanding live checks](docs/validation.md) distinguish
 local tool tests from a complete template build and Proxmox compatibility tests.
+
+The prepared [v0.1.1 patch release notes](docs/releases/v0.1.1.md) describe the
+forwarding fix and pending acceptance checks. Publication requires approval;
+v0.1.0 assets must remain unchanged.

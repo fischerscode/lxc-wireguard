@@ -26,7 +26,7 @@ were present; context-appropriate standard tooling was used.
   supplied. SSH public-key access is provisioned by the operator through PVE.
 - Clear identity, keys, resolver data, temporary device nodes, runtime state,
   logs, caches and downloaded APKs. No tunnel or firewall service is enabled;
-  no forwarding configuration is added. Replace nftables' active example with
+  forwarding was not explicitly configured in that revision. Replace nftables' active example with
   a comment-only file. All optional deployment examples stay in documentation.
 - Preserve the existing published-release asset workflow, pinned action commits
   and narrow upload-job permissions; replace builder dependencies with the tools
@@ -123,3 +123,49 @@ The complete pipeline still needs a run on a disposable root-capable builder.
    Exercise reload/restart and confirm externally managed files are not rewritten.
 6. Back up, apply `apk update`/`apk upgrade`, review service restarts and repeat
    relevant tests. Do not assume a new template updates existing containers.
+
+## v0.1.1 forwarding-default fix (2026-10-16)
+
+This patch starts from `d428b3e` with a clean working tree. The isolated namespace
+check described below passed locally; no external live system was modified.
+
+The operator reported that the unchanged v0.1.0 release booted successfully on a
+fresh unprivileged Proxmox container, with OpenRC, sshd and sysctl running, but
+`net.ipv4.ip_forward=1` and `net.ipv6.conf.all.forwarding=0` before VPN configuration.
+This is operator-supplied live evidence for v0.1.0, not a test performed here. The
+cause of the IPv4 value is unconfirmed; host inheritance is not an established
+explanation. Absence of an enabling file did not ensure a disabled runtime value.
+
+The image now installs `10-wireguard-defaults.conf` with explicit zeros for IPv4
+ip_forward/default forwarding and IPv6 all/default forwarding. The pinned native
+OpenRC services declare sysctl before bootmisc, and networking after bootmisc.
+ifupdown-ng's forward executor writes per-interface forwarding only when explicit
+forward-ipv4/forward-ipv6 options are set. The template contains none; nftables
+remains disabled with its forwarding option defaulting to no. No extra reset
+service, interface hook or periodic reconciliation is introduced.
+
+Static archive checks require all four exact zero assignments and the packaged
+boot-order declarations, and continue rejecting forwarding-on sysctls elsewhere.
+Eight Python regression tests, Bash syntax, ShellCheck and actionlint pass.
+The build also runs `tests/check-forwarding.sh` in a fresh network/mount namespace
+on its disposable rootfs. It exercises the packaged sysctl start function (OpenRC
+display/boolean helpers stubbed), then real ifupdown-ng static IPv4/IPv6 interface
+up/down cycles, seeded from forwarding-on state. A later operator `90-` file must
+still enable forwarding and survive network reconfiguration. The vendor
+00-alpine.conf is temporarily masked only in this test because it includes global
+kernel/fs knobs and ping GID ranges unsuitable for this namespace test. Cleanup
+restores network configuration and removes test overrides before image packing.
+
+This namespace check is a component test on the local WSL kernel, not an OpenRC
+PID-1 boot or container reboot. The full production image build still requires a
+root-capable builder. No external host changes, tag, push, release or replacement
+of v0.1.0 assets are authorized or performed.
+
+Before approving v0.1.1, build/inspect the new archive and test a fresh unprivileged
+Proxmox container with only normal site networking and a provisioned public SSH
+key. After the first boot **and** after reboot, record `rc-status -a`, the live
+network configuration, both global forwarding values (must be 0), and per-interface
+values. Check `/etc/sysctl.conf`, `/run/sysctl.d`, interface forwarding options and
+network hooks if values differ. Then explicitly opt in with the documented `90-`
+file and verify both values can become 1 and persist through boot without a later
+image reset. These v0.1.1 Proxmox acceptance checks have not been run here.
