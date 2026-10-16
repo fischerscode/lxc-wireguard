@@ -16,17 +16,25 @@ spec.loader.exec_module(checker)
 class TemplateTests(unittest.TestCase):
     def image(self, extra=None):
         files = {
-            'etc/machine-id': '', 'etc/resolv.conf': '',
+            'etc/resolv.conf': '',
+            'etc/alpine-release': checker.ALPINE_VERSION+'\n',
+            'etc/rc.conf': 'rc_sys="lxc"\n',
+            'etc/inittab': '::sysinit:/sbin/openrc sysinit\n::sysinit:/sbin/openrc boot\n::wait:/sbin/openrc default\n::shutdown:/sbin/openrc shutdown\n',
+            'etc/init.d/sshd': 'generate_host_keys() { ssh-keygen -A; }\n',
+            'etc/apk/world': 'alpine-base\nopenssh\n',
+            'etc/apk/repositories': f'https://dl-cdn.alpinelinux.org/alpine/{checker.ALPINE_BRANCH}/main\n',
+            'etc/nftables.nft': '# No rules installed. Configure explicitly before enabling nftables.\n',
             'etc/hostname': 'localhost\n',
             'etc/hosts': '127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n',
             'etc/network/interfaces': 'auto lo\niface lo inet loopback\nsource /etc/network/interfaces.d/*\n',
-            'etc/shadow': 'root:!:20000:0:99999:7:::\n',
-            'etc/systemd/system/sshd-keygen.service.d/template.conf': '[Unit]\nConditionFirstBoot=\n',
-            'etc/systemd/system/ssh.service.d/host-keys.conf': 'Requires=sshd-keygen.service\nAfter=sshd-keygen.service\n',
-            'etc/systemd/system/multi-user.target.wants/ssh.service': '',
-            'var/lib/dpkg/status': '\n\n'.join(f'Package: {p}\nStatus: install ok installed' for p in checker.REQUIRED),
+            'etc/shadow': 'root:*:20000:0:99999:7:::\n',
+            'lib/apk/db/installed': '\n\n'.join(f'P:{p}\nV:{v}\nA:x86_64' for p, v in checker.LOCKED_PACKAGES.items()),
         }
         files.update(extra or {})
+        links = {f'etc/runlevels/{level}/{service}': f'/etc/init.d/{service}'
+                 for level, services in checker.RUNLEVELS.items() for service in services}
+        for path in (extra or {}):
+            links.pop(path, None)
         output = io.BytesIO()
         with tarfile.open(fileobj=output, mode='w') as archive:
             for name, text in files.items():
@@ -34,6 +42,11 @@ class TemplateTests(unittest.TestCase):
                 member = tarfile.TarInfo(name)
                 member.size = len(data)
                 archive.addfile(member, io.BytesIO(data))
+            for name, target in links.items():
+                member = tarfile.TarInfo(name)
+                member.type = tarfile.SYMTYPE
+                member.linkname = target
+                archive.addfile(member)
         output.seek(0)
         return output
 
@@ -55,13 +68,15 @@ class TemplateTests(unittest.TestCase):
     def test_rejects_active_configuration(self):
         for name, value in {
             'etc/wireguard/wg0.conf': '[Interface]',
-            'etc/systemd/system/multi-user.target.wants/wg-quick@wg0.service': '',
-            'etc/systemd/system/sysinit.target.wants/nftables.service': '',
+            'etc/runlevels/default/wg-quick.wg0': '',
+            'etc/runlevels/boot/nftables': '',
             'etc/sysctl.d/router.conf': 'net.ipv4.ip_forward = 1',
             'etc/sysctl.d/router6.conf': 'net/ipv6/conf/all/forwarding = 1',
             'usr/lib/sysctl.d/router.conf': 'net.ipv4.ip_forward = 1',
-            'etc/nftables.conf': 'flush ruleset',
-            'etc/apt/apt.conf.d/99mmdebstrap': 'Acquire::Check-Valid-Until \"false\";',
+            'etc/nftables.nft': 'flush ruleset',
+            'etc/apk/world': 'openssh=10.3_p1-r1',
+            'lib/apk/db/installed': 'P:openssh\nV:0-r0\nA:x86_64',
+            'etc/conf.d/sshd': 'sshd_disable_keygen=yes',
             'etc/network/interfaces.d/eth0': 'address 192.0.2.1',
         }.items():
             with self.subTest(name=name), self.assertRaises(ValueError):
@@ -81,9 +96,9 @@ class TemplateTests(unittest.TestCase):
             archive.write_bytes(archive.read_bytes()[:32])
             self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
 
-    def test_requires_ssh_key_ordering(self):
+    def test_requires_packaged_services(self):
         with self.assertRaises(ValueError):
-            checker.check(self.image({'etc/systemd/system/ssh.service.d/host-keys.conf': ''}))
+            checker.check(self.image({'etc/runlevels/default/sshd': ''}))
 
 
 if __name__ == '__main__':

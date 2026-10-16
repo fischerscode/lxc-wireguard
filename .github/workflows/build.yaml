@@ -23,7 +23,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            mmdebstrap curl ca-certificates zstd python3 shellcheck
+            curl ca-certificates gnupg zstd python3 shellcheck
       - name: Check build scripts
         run: |
           bash -n scripts/build.sh scripts/customize.sh
