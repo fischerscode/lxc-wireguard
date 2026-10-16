@@ -1,111 +1,108 @@
 # WireGuard LXC template for Proxmox
 
-A small Debian 13 (trixie), amd64 root filesystem with OpenSSH, wireguard-tools,
-nftables, iproute2 and systemd. Configure it over SSH or `pct exec` with ordinary
-Debian files and tools. There is no management agent, configuration API, runtime
-reconciler, Python or Dart configuration dependency.
+A small **Alpine Linux 3.24.2, x86_64** root filesystem using BusyBox init and
+OpenRC. OpenSSH, wireguard-tools (including wg-quick), nftables and iproute2 are
+installed from Alpine's official main repository. Configure ordinary files over
+SSH or `pct exec`, manually or with external management tools. There is no custom
+management agent, configuration protocol, reconciler, Python or Dart runtime.
 
-The template contains no VPN configuration, peers, credentials, SSH host keys or
-machine identity. Root is locked; SSH public-key provisioning is required.
-Forwarding is not enabled. nftables and wg-quick instances are not enabled.
-Nothing installs firewall rules at boot. Examples below are documentation only.
+The image ships no VPN configuration, peers, private keys, passwords, authorized
+SSH keys or machine identity. No WireGuard instance, nftables rules or forwarding
+is enabled. Optional examples exist only in this repository's documentation.
 
 ## Compatibility and host requirements
 
-Target: **fully updated Proxmox VE 9.x, amd64**, using an **unprivileged** container
-and the standard Debian OS setup. This is the supported deployment target, not a
-claim of live certification. No Proxmox boot, networking or reboot test has yet
-been performed for this revision. Older PVE releases, other architectures and
-non-Proxmox LXC are outside the supported target. Keep `pve-container` current:
-old versions can reject newer Debian point-release identifiers.
+Supported deployment target: **fully updated Proxmox VE 9.x on amd64**, with an
+**unprivileged** container and standard Alpine OS setup. This is the intended
+support scope, not a live certification: PVE creation, boot, SSH and reboot have
+not been tested for this revision. Other PVE versions, architectures and generic
+LXC installations are outside the supported target.
 
-Containers share the host kernel. On the **Proxmox host**, check/load WireGuard:
+The container shares the **host** kernel. On the Proxmox host, verify/load kernel
+WireGuard (`modprobe wireguard`) and the required nftables/netfilter features.
+Connection tracking and NAT support are needed when using those features.
+The container needs namespaced `CAP_NET_ADMIN` to manage its interfaces, routes
+and firewall. Start with standard unprivileged PVE permissions. Kernel WireGuard
+needs no guest kernel, headers, DKMS, `/dev/net/tun`, nesting or keyctl option.
 
-```sh
-modprobe wireguard
-```
+Do not use a privileged container, disable AppArmor or grant host module-loading
+capabilities to solve a missing host module. Diagnose specific denials when using
+custom capability, seccomp, AppArmor or sysctl restrictions. PVE firewall, bridge
+policies, upstream routes and UDP port forwarding are separate host/site concerns.
+No build or validation command in this repository changes an external host.
 
-The host kernel must provide WireGuard, network namespaces and nftables/netfilter
-(including connection tracking and NAT when used). It must allow the container's
-namespaced `CAP_NET_ADMIN` for interfaces, routes and rules. Default unprivileged
-PVE networking is the intended starting point. No guest kernel, headers, DKMS,
-`/dev/net/tun`, nesting or keyctl feature is needed for kernel WireGuard.
+Alpine uses ifupdown-ng and `/etc/network/interfaces`; BusyBox provides the DHCPv4
+client. Proxmox supplies addresses, DNS and hostname during provisioning.
+The [PVE Alpine setup implementation](https://github.com/proxmox/pve-container/blob/master/src/PVE/LXC/Setup/Alpine.pm)
+currently converts `ip6=auto` and `ip6=dhcp` to manual configuration. Prefer explicit
+static IPv6 addresses/routes for predictable dual-stack operation. SLAAC requires
+appropriate interface/RA settings; do not assume Proxmox's DHCPv6 setting provisions
+a working DHCPv6 client in this template.
 
-Do not grant host `CAP_SYS_MODULE`, use a privileged container or disable AppArmor
-to solve a module problem. Load needed kernel modules on the host. Host firewall,
-bridge policies, upstream routing and UDP port forwarding are separate from the
-guest firewall. Custom LXC capability drops, seccomp/AppArmor policies or sysctl
-restrictions can prevent operation; diagnose the specific denial. The template
-cannot change these host policies. Userspace wireguard-go is not included.
+## Installation and first SSH access
 
-These expectations follow the [Proxmox container guide](https://pve.proxmox.com/pve-docs/chapter-pct.html)
-and [Debian setup implementation](https://github.com/proxmox/pve-container/blob/master/src/PVE/LXC/Setup/Debian.pm).
-Debian 13 is the [current stable release](https://www.debian.org/releases/trixie/).
-
-## Install and establish SSH access
-
-Download the `.tar.zst` and `SHA256SUMS` from the same published GitHub release.
-Review the source/release you trust, then verify the archive before importing it:
+Download the `.tar.zst` and `SHA256SUMS` from the same trusted GitHub release:
 
 ```sh
 sha256sum --ignore-missing -c SHA256SUMS
 ```
 
-Ensure the archive itself reports `OK`; the checksum detects corruption but does
-not independently authenticate a compromised release. Copy it to a Proxmox
-storage supporting `vztmpl` (for `local`, normally `/var/lib/vz/template/cache/`).
-On the host, adapt storage, bridge, address and ID to your site:
+Ensure the archive itself reports `OK`. A checksum detects corruption; it does not
+independently authenticate a compromised release. Copy the archive into a PVE
+storage with `vztmpl` support (normally `/var/lib/vz/template/cache/` for `local`).
+On your host, adapt ID, storage, bridge and network parameters:
 
 ```sh
-pct create 120 local:vztmpl/debian-13-wireguard-amd64_v1.0.0.tar.zst \
-  --ostype debian --arch amd64 --unprivileged 1 \
+pct create 120 local:vztmpl/alpine-3.24.2-wireguard-x86_64_v1.0.0.tar.zst \
+  --ostype alpine --arch amd64 --unprivileged 1 \
   --hostname wireguard --rootfs local-lvm:2 --memory 256 --swap 0 \
-  --net0 name=eth0,bridge=vmbr0,ip=dhcp,ip6=auto \
+  --net0 name=eth0,bridge=vmbr0,ip=dhcp,ip6=manual \
   --ssh-public-keys /root/provisioning.pub
 pct start 120
 pct exec 120 -- ip -br address
 pct exec 120 -- ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ```
 
-`/root/provisioning.pub` must contain **your public SSH key**, never a private key.
-Proxmox installs it into root's authorized_keys. No password is embedded in the
-image. Debian's root SSH policy permits keys and prohibits password login. Verify
-the displayed host-key fingerprint through this trusted host console, then:
+`x86_64` is Alpine's name for PVE's `amd64` architecture. The filename is an example
+release version; use the asset you downloaded. `/root/provisioning.pub` contains
+your **public** key. Proxmox installs it into `/root/.ssh/authorized_keys`.
+Verify the displayed host-key fingerprint through the trusted host console, then
+connect with `ssh root@CONTAINER_ADDRESS`.
 
-```sh
-ssh root@CONTAINER_ADDRESS
-```
+Alternatively, install your public key through `pct exec` with `/root/.ssh` mode
+0700 and `authorized_keys` mode 0600. The image preserves Alpine's root `*` shadow
+marker (no usable password) and OpenSSH's `prohibit-password` root policy. Never
+replace it with an empty password. Alpine OpenSSH does not use PAM here; blindly
+changing the marker to `!` may also deny public-key access. Provision administrator
+accounts and your own SSH policy as needed. `pct exec` remains a recovery path.
 
-Alternatively use `pct exec` to install a public key with directory mode 0700 and
-file mode 0600 in `/root/.ssh/authorized_keys` before exposing SSH. Provision your
-usual administrator account and SSH policy as needed. A locked root password does
-not prevent `pct exec`. Do not enable empty-password login.
+The unmodified packaged `sshd` OpenRC service generates missing host keys before
+checking/starting the daemon. Proxmox can also generate them at provisioning;
+they are never copied from the build. The packaged `machine-id` service generates
+a missing identity at boot. Both identities survive reboots. Cloning an already
+provisioned container copies its identities: create new containers from the clean
+template, or deliberately sanitize a stopped clone before reuse.
 
-Proxmox supplies hostname, DNS and `/etc/network/interfaces`. ifupdown and a DHCP
-client are included for dynamic addresses; use static IPv4/IPv6 in `pct create`
-when appropriate. systemd-networkd is disabled to avoid a second network manager.
-The image clears `/etc/machine-id`; systemd generates it on boot. Proxmox normally
-creates SSH host keys at provisioning, with Debian's `sshd-keygen.service`
-required before SSH starts. A drop-in clears its first-boot condition so missing
-keys are generated even if provisioning already populated machine-id. Keys survive subsequent boots.
-Cloning an already provisioned container copies identities: use the clean template
-for new containers, or deliberately sanitize a stopped clone before reuse.
+## Configuration and operation
 
-## Configure WireGuard
+Follow [the optional dual-stack setup](docs/configuration.md) for wg-quick, sysctl,
+OpenRC boot persistence, routed operation and optional IPv4 NAT/NAT66. Nothing in
+that document is activated by the build. There is no SaveConfig behavior that
+rewrites externally managed tunnel files.
 
-See [the minimal dual-stack setup](docs/configuration.md) for wg-quick, routed
-forwarding, optional NAT, scoped nftables rules and boot persistence. You can use
-`wg` directly instead; persistence and address/route setup then remain your own
-responsibility. Configuration belongs to the operator, whether managed manually,
-by Ansible or by another SSH-based tool. No tool-specific protocol is required.
+Use `rc-status`, `rc-service sshd status`, `wg show`, `ip -br address`,
+`ip -4 route`, `ip -6 route`, `nft list ruleset` and `/var/log/messages` to diagnose
+problems. BusyBox syslog is enabled. OpenRC's regular LXC mode avoids treating the
+container as a physical machine; there are no custom init scripts.
 
-## Build and release
+## Build inputs, checks and releases
 
-On a disposable amd64 Debian/Ubuntu VM with root and working mount namespaces:
+Build on a disposable root-capable x86_64 Linux machine. For a Debian/Ubuntu
+builder (the image itself remains Alpine):
 
 ```sh
 sudo apt-get update
-sudo apt-get install --no-install-recommends mmdebstrap curl ca-certificates \
+sudo apt-get install --no-install-recommends curl ca-certificates gnupg \
   zstd python3 git shellcheck
 bash -n scripts/build.sh scripts/customize.sh
 shellcheck -x scripts/build.sh scripts/customize.sh
@@ -113,62 +110,75 @@ python3 -m unittest discover -s tests -v
 sudo scripts/build.sh dev
 ```
 
-`dist/` contains the archive, installed-package versions, build metadata and
-SHA256SUMS. Build tooling uses Python only to inspect archives; Python is not
-installed in the image. The build requires root and trusted repository scripts;
-never run it on a production Proxmox host. Temporary rootfs data is deleted on
-exit. `dist/` is ignored by Git.
+[build.conf](build.conf) pins the Alpine branch, minirootfs point release, SHA-256
+and full release-signing-key fingerprint. The [vendored public key](keys/alpine-release.asc)
+verifies the archive's detached GPG signature. It is Natanael Copa's public key,
+fingerprint `0482D84022F52DF1C4E7CD43293ACD0907D9495A`, retrieved by full fingerprint
+from the Ubuntu public keyserver and stored locally for review. APK verifies official package
+signatures using the Alpine keys inside that verified bootstrap. Checks never
+disable TLS certificates or package authentication.
 
-[build.conf](build.conf) pins the suite, architecture, Debian snapshot timestamp
-and bootstrap keyring download checksum. APT verifies signed repository metadata
-and package hashes; authentication is never disabled. Expiry checking is relaxed
-only for historical snapshot metadata during the build. Deployed containers use
-normal Debian stable, updates and security repositories with normal verification.
-Refresh the snapshot and keyring deliberately, rebuild and review the package
-manifest for security updates. Snapshots do not automatically receive new fixes.
+[packages.lock](packages.lock) pins the exact filenames and SHA-256 of the complete
+APK dependency closure, including the base packages. APK installation is offline
+from those verified files. Official branch repositories are rolling: if an old
+APK is removed, the build fails, rather than substituting a new version. Preserve
+the locked APKs in your own archival cache/mirror when long-term rebuilds matter;
+this repository does not promise Alpine retains every historic package.
 
-The archive has sorted entries, a single compression thread and Git-derived
-archive timestamps. Package versions and source revision are recorded. Host
-mmdebstrap/dpkg/tar versions and package-generated content can still differ;
-this is an auditable build, not a promise of byte-identical output on any host.
-The Actions runner OS and action commits are pinned; builder packages receive OS
-updates. Preserve build logs and manifests when comparing builds.
-
-GitHub Actions builds/checks on main pushes, pull requests, manual runs and every
-**published GitHub release** (including prereleases). Only the separate upload job
-has `contents: write`; it attaches the tested archive, manifests and SHA256SUMS to
-the existing release. It never creates a release from a pushed tag. A published
-release temporarily has no assets until the build succeeds; inspect failed runs
-and rerun them. Existing assets are not silently overwritten. GitHub release
-events created using another workflow's `GITHUB_TOKEN` do not trigger workflows;
-publish manually or use an appropriately scoped GitHub App/token for that future
-automation. Keep the workflow on the default branch and on the release tag.
-
-No release is published by the build scripts. Local builds and manual Actions runs
-produce artifacts without publishing.
-
-## Update existing containers
-
-A new template is only used when creating a new container. It does not update an
-existing one. Back up the container and configuration, then run inside it:
+Refresh locks deliberately for security fixes. In a disposable, verified Alpine
+3.24 minirootfs, use only the configured main repository and run:
 
 ```sh
-apt-get update
-apt-get upgrade
+mkdir -p /packages
+apk --update-cache fetch --recursive --output /packages \
+  alpine-base openssh wireguard-tools wireguard-tools-openrc \
+  nftables nftables-openrc iproute2 ca-certificates
+apk verify /packages/*.apk
+(cd /packages && sha256sum *.apk)
 ```
 
-Review Debian security updates and service restarts. Reboot the container when
-appropriate; shared-kernel updates require a separate Proxmox host maintenance
-window. Major Debian upgrades follow Debian's release notes, not template import.
+Commit the sorted checksum output as packages.lock, review changed versions,
+rebuild and run checks. Update bootstrap version/hash/signing key separately when
+appropriate. Do not mix edge or another branch. All selected packages are in main;
+[Alpine's support schedule](https://www.alpinelinux.org/releases/) lists v3.24 main
+support through June 2028. Recheck the schedule when maintaining this template.
 
-For an old experimental image, audit `/etc/sysctl.d/99-wg.conf`, enabled
-`wg-quick@wg0`, custom unit drop-ins and the active firewall before changing them.
-They may now be intentional operator configuration. Migrate deliberately or
-provision a fresh container, transfer only reviewed configuration and generate new
-identities. Do not run the build cleanup script against an installed container.
+`dist/` contains the checked archive, package manifest, build metadata and
+SHA256SUMS. No image size is claimed without a complete build. The tar stream is
+sorted, Git-timestamped and compressed with one thread. Package-generated data and
+builder tool versions can still differ; byte-identical builds are not guaranteed.
+Temporary rootfs/downloads are deleted on exit. Python is builder validation only.
 
-## Verification status
+GitHub Actions builds on pull requests, main pushes, manual runs and every
+**published GitHub release**, including prereleases. Only the separate asset-upload
+job has `contents: write`. It verifies checksums and attaches the archive,
+manifest, build metadata and SHA256SUMS to the existing release. No release is
+created from a tag push and existing assets are not silently overwritten.
+A published release has no assets until its build finishes; inspect/rerun failed
+runs. Releases created with another workflow's GITHUB_TOKEN do not trigger this
+workflow: use manual publication or an appropriate GitHub App/token. Keep the
+workflow on both the default branch and release tag.
 
-See [docs/validation.md](docs/validation.md) for the checks actually performed,
-limitations and the live-test checklist. No external Proxmox host is modified by
-this repository's checks.
+## Updates and migration
+
+Existing Alpine containers use the normal stable main repository and unpinned
+`/etc/apk/world`. After taking a backup, run inside the container:
+
+```sh
+apk update
+apk upgrade
+```
+
+Review service restart needs; for example `rc-service sshd restart` and, in a
+maintenance window, `rc-service wg-quick.wg0 restart` if configured. Reboot when
+appropriate. Shared-kernel updates belong to a separate PVE host maintenance
+window. Major Alpine branch upgrades follow Alpine's upgrade guidance.
+
+A new template never updates an existing container automatically. Existing Debian
+containers cannot be converted with apk: provision a fresh Alpine container,
+transfer only reviewed operator configuration, generate fresh host/machine
+identities and switch routing/endpoints deliberately. Keep a tested rollback.
+Do not run build cleanup scripts against installed containers.
+
+[Validation status and outstanding live checks](docs/validation.md) distinguish
+local tool tests from a complete template build and Proxmox compatibility tests.
