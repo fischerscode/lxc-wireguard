@@ -20,6 +20,10 @@ class TemplateTests(unittest.TestCase):
             'etc/alpine-release': checker.ALPINE_VERSION+'\n',
             'etc/rc.conf': 'rc_sys="lxc"\n',
             'etc/inittab': '::sysinit:/sbin/openrc sysinit\n::sysinit:/sbin/openrc boot\n::wait:/sbin/openrc default\n::shutdown:/sbin/openrc shutdown\n',
+            checker.FORWARDING_DEFAULTS: (checker.REPO / 'files' / checker.FORWARDING_DEFAULTS).read_text(),
+            'etc/init.d/sysctl': 'before bootmisc logger\n',
+            'etc/init.d/bootmisc': 'after clock root sysctl\n',
+            'etc/init.d/networking': 'after bootmisc hwdrivers modules\n',
             'etc/init.d/sshd': 'generate_host_keys() { ssh-keygen -A; }\n',
             'etc/apk/world': 'alpine-base\nopenssh\n',
             'etc/apk/repositories': f'https://dl-cdn.alpinelinux.org/alpine/{checker.ALPINE_BRANCH}/main\n',
@@ -81,6 +85,19 @@ class TemplateTests(unittest.TestCase):
         }.items():
             with self.subTest(name=name), self.assertRaises(ValueError):
                 checker.check(self.image({name: value}))
+
+    def test_requires_explicit_forwarding_defaults(self):
+        for key in checker.FORWARDING_KEYS:
+            defaults = (checker.REPO / 'files' / checker.FORWARDING_DEFAULTS).read_text()
+            for replacement in ('', f'{key} = 1', f'{key} = 0\n{key} = 0'):
+                with self.subTest(key=key, replacement=replacement), self.assertRaises(ValueError):
+                    checker.check(self.image({checker.FORWARDING_DEFAULTS:
+                                              defaults.replace(f'{key} = 0', replacement)}))
+
+    def test_requires_sysctl_before_networking(self):
+        for service in ('sysctl', 'bootmisc', 'networking'):
+            with self.subTest(service=service), self.assertRaises(ValueError):
+                checker.check(self.image({f'etc/init.d/{service}': ''}))
 
     def test_rejects_residue_and_unsafe_archive_names(self):
         for name in ('var/log/build.log', 'tmp/key', '../escape', '/etc/escape'):

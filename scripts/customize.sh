@@ -4,6 +4,9 @@ root=${1:?rootfs required}
 [[ -f $root/etc/alpine-release && $root != / ]] || exit 1
 mkdir -p "$root/etc/network/interfaces.d" "$root/etc/wireguard"
 chmod 700 "$root/etc/wireguard"
+# Apply once during the normal OpenRC sysctl boot phase, before networking.
+install -D -m 644 "$(dirname "$0")/../files/etc/sysctl.d/10-wireguard-defaults.conf" \
+    "$root/etc/sysctl.d/10-wireguard-defaults.conf"
 cat > "$root/etc/network/interfaces" <<'INTERFACES'
 auto lo
 iface lo inet loopback

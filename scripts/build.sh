@@ -9,7 +9,7 @@ version=${1:-dev}
 [[ $version =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || { echo 'Invalid version' >&2; exit 1; }
 [[ $EUID == 0 ]] || { echo 'Run on a disposable amd64 Linux builder as root (sudo).' >&2; exit 1; }
 [[ $(uname -m) == x86_64 ]] || { echo 'An x86_64 builder is required.' >&2; exit 1; }
-for tool in curl gpg gpgv zstd python3 git chroot tar; do command -v "$tool" >/dev/null; done
+for tool in curl gpg gpgv zstd python3 git chroot tar unshare mount timeout; do command -v "$tool" >/dev/null; done
 export LC_ALL=C TZ=UTC
 export SOURCE_DATE_EPOCH
 SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
@@ -81,6 +81,7 @@ chroot "$root" /bin/bash -n /usr/bin/wg-quick
 for service in sshd wg-quick nftables networking sysctl machine-id; do
     chroot "$root" /bin/sh -n "/etc/init.d/$service"
 done
+tests/check-forwarding.sh "$root"
 # OpenRC's checkconfig may create temporary runtime state; none belongs in a template.
 find "$root/dev" "$root/run" "$root/tmp" "$root/var/log" -mindepth 1 -delete
 tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --numeric-owner --xattrs --acls \

@@ -37,6 +37,19 @@ RUNLEVELS = {
 }
 
 
+FORWARDING_DEFAULTS = 'etc/sysctl.d/10-wireguard-defaults.conf'
+FORWARDING_KEYS = (
+    'net.ipv4.ip_forward', 'net.ipv4.conf.default.forwarding',
+    'net.ipv6.conf.all.forwarding', 'net.ipv6.conf.default.forwarding',
+)
+
+
+def dependency_contains(data, directive, service):
+    """Read the plain dependency declarations in the pinned OpenRC services."""
+    return any(service in line.split()[1:] for line in data.decode().splitlines()
+               if line.strip().startswith(directive + ' '))
+
+
 def check(stream):
     files = {}
     names = set()
@@ -82,6 +95,18 @@ def check(stream):
         errors.append('Unexpected hostname')
     if files.get('etc/hosts') != b'127.0.0.1 localhost\n::1 localhost ip6-localhost ip6-loopback\n':
         errors.append('Unexpected hosts file')
+    defaults = files.get(FORWARDING_DEFAULTS, b'')
+    assignments = re.findall(rb'^\s*([^#\s=]+)\s*=\s*(\S+)\s*$', defaults, re.M)
+    if sorted(assignments) != sorted((key.encode(), b'0') for key in FORWARDING_KEYS):
+        errors.append('Missing explicit IPv4/IPv6 forwarding-off defaults')
+    # The packaged dependency chain must continue to apply sysctls before ifup.
+    for path, directive, service in (
+        ('etc/init.d/sysctl', 'before', 'bootmisc'),
+        ('etc/init.d/bootmisc', 'after', 'sysctl'),
+        ('etc/init.d/networking', 'after', 'bootmisc'),
+    ):
+        if not dependency_contains(files.get(path, b''), directive, service):
+            errors.append(f'Unexpected sysctl/network boot ordering: {path}')
     for name, data in files.items():
         if name.startswith(('etc/', 'root/', 'home/')) and (
             b'PRIVATE KEY-----' in data or re.search(rb'^\s*(PrivateKey|PresharedKey)\s*=', data, re.M)

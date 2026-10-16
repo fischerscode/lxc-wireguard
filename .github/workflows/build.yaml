@@ -26,8 +26,8 @@ jobs:
             curl ca-certificates gnupg zstd python3 shellcheck
       - name: Check build scripts
         run: |
-          bash -n scripts/build.sh scripts/customize.sh
-          shellcheck -x scripts/build.sh scripts/customize.sh
+          bash -n scripts/build.sh scripts/customize.sh tests/check-forwarding.sh
+          shellcheck -x scripts/build.sh scripts/customize.sh tests/check-forwarding.sh
           python3 -m unittest discover -s tests -v
       - name: Build and inspect template
         env:
