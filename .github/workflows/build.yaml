@@ -1,119 +1,61 @@
-name: build-wireguard-lxc
+name: Build WireGuard LXC template
+
 on:
+  pull_request:
   push:
-    tags: ["v*"] # tag like v1.0.0 to build a release
+    branches: [main]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
-  contents: write # needed to create GitHub Releases
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-
-    env:
-      SUITE: trixie
-      ARCH: amd64
-      MIRROR: http://deb.debian.org/debian
-
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install build deps (host runner)
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.release.tag_name || github.sha }}
+      - name: Install builder dependencies
         run: |
-          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            mmdebstrap debootstrap debian-archive-keyring gnupg \
-            zstd xz-utils tar
-
-      - name: Build minimal Debian ${SUITE} rootfs with WireGuard tools
+            mmdebstrap curl ca-certificates zstd python3 shellcheck
+      - name: Check build scripts
         run: |
-          set -euxo pipefail
+          bash -n scripts/build.sh scripts/customize.sh
+          shellcheck -x scripts/build.sh scripts/customize.sh
+          python3 -m unittest discover -s tests -v
+      - name: Build and inspect template
+        env:
+          VERSION: ${{ github.event.release.tag_name || format('dev-{0}', github.sha) }}
+        run: sudo scripts/build.sh "$VERSION"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: wireguard-lxc
+          path: dist/*
+          if-no-files-found: error
 
-          # Build as root on the VM so we have CAP_SYS_ADMIN for mounts
-          sudo mmdebstrap --mode=root \
-            --architectures=${ARCH} --variant=minbase \
-            --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
-            --keyring=/usr/share/keyrings/debian-archive-removed-keys.gpg \
-            --aptopt='Acquire::Retries "5"' \
-            --aptopt='Acquire::Languages "none"' \
-            --include=wireguard-tools,iproute2,iptables,nftables,systemd-sysv,procps,ca-certificates,ifupdown,openssh-server,iputils-ping,curl \
-            ${SUITE} rootfs ${MIRROR}
-
-          sudo mkdir -p rootfs/etc/systemd/system
-          sudo ln -sfn /dev/null rootfs/etc/systemd/system/systemd-networkd-wait-online.service
-          sudo ln -sfn /dev/null rootfs/etc/systemd/system/systemd-networkd.service
-          sudo mkdir -p rootfs/etc/systemd/system-preset
-          printf '%s\n' \
-            'disable systemd-networkd.service' \
-            'disable systemd-networkd-wait-online.service' \
-          | sudo tee rootfs/etc/systemd/system-preset/90-disable-networkd.preset >/dev/null
-
-          # Only start wg-quick if /etc/wireguard/wg0.conf exists
-          sudo mkdir -p rootfs/etc/systemd/system/wg-quick@wg0.service.d
-          sudo tee rootfs/etc/systemd/system/wg-quick@wg0.service.d/10-conditional.conf >/dev/null <<'EOF'
-          [Unit]
-          ConditionPathExists=/etc/wireguard/wg0.conf
-          EOF
-          # Enable wg0 service by default
-          sudo mkdir -p rootfs/etc/systemd/system/multi-user.target.wants
-          sudo ln -sf /usr/lib/systemd/system/wg-quick@.service \
-            rootfs/etc/systemd/system/multi-user.target.wants/wg-quick@wg0.service
-
-          sudo mkdir -p rootfs/etc/systemd/system/network-online.target.wants
-          sudo ln -sf /lib/systemd/system/ifupdown-wait-online.service \
-            rootfs/etc/systemd/system/network-online.target.wants/ifupdown-wait-online.service
-
-          # Enable forwarding by default (harmless if you don't NAT)
-          sudo mkdir -p rootfs/etc/sysctl.d
-          printf 'net.ipv4.ip_forward=1\nnet.ipv6.conf.all.forwarding=1\n' | \
-            sudo tee rootfs/etc/sysctl.d/99-wg.conf >/dev/null
-
-          # Empty dir to be bind-mounted read-only later by Terraform
-          sudo mkdir -p rootfs/etc/wireguard
-          # Trim apt lists to keep the template small
-          sudo rm -rf rootfs/var/lib/apt/lists/* || true
-
-          sudo tee rootfs/etc/network/interfaces >/dev/null <<'EOF'
-          auto lo
-          iface lo inet loopback
-          # PVE füllt eth0 hier beim Erstellen aus
-          EOF
-
-          sudo mkdir -p rootfs/etc/network/interfaces.d
-
-      - name: Pack Proxmox LXC template (.tar.zst)
+  release:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: wireguard-lxc
+          path: dist
+      - name: Verify and attach assets to the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          set -euxo pipefail
-          VERSION="${GITHUB_REF_NAME:-dev}"
-          TEMPLATE="debian-13-wireguard-${ARCH}_${VERSION}.tar"
-
-          # Sanity check: ensure rootfs isn't empty
-          sudo test -d rootfs/etc
-          sudo ls -la rootfs | head -n 50
-
-          # The important fix is the trailing dot after -C rootfs
-          sudo tar --numeric-owner --xattrs --acls -C rootfs -cf "${TEMPLATE}" .
-
-          zstd -19 --rm "${TEMPLATE}"
-          sha256sum "${TEMPLATE}.zst" > SHA256SUMS
-
-      - name: Create GitHub Release (upload artifact + checksums)
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          name: "WireGuard LXC template ${GITHUB_REF_NAME} (Debian 13)"
-          files: |
-            *.tar.zst
-            SHA256SUMS
-          generate_release_notes: true
-
-      - name: Upload artifact when not tagged
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: wireguard-lxc-${{ github.run_id }}
-          path: |
-            *.tar.zst
-            SHA256SUMS
+          cd dist
+          sha256sum -c SHA256SUMS
+          gh release upload "$RELEASE_TAG" -- ./*.tar.zst ./*.packages.tsv ./*.build-info.txt ./SHA256SUMS
